@@ -1,61 +1,57 @@
 package main
 
 import (
-	"bufio"
+	"crawler/collect"
+	"crawler/parse"
+	"crawler/proxy"
 	"fmt"
-	"io/ioutil"
-	"net/http"
-	"regexp"
-
-	"golang.org/x/net/html/charset"
-	"golang.org/x/text/encoding"
-	"golang.org/x/text/encoding/unicode"
-	"golang.org/x/text/transform"
+	"time"
+	// "go.uber.org/zap"
+	// "gorm.io/gorm/logger"
 )
 
-var headerRe = regexp.MustCompile(`<div class="news_li"[\s\S]*?<h2>[\s\S]*?<a.*?target="_blank">([\s\S]*?)</a>`)
-
-func Fetch(url string) ([]byte, error) {
-
-	resp, err := http.Get(url)
-
-	if err != nil {
-		panic(err)
-	}
-
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Error status code:%d", resp.StatusCode)
-	}
-	bodyReader := bufio.NewReader(resp.Body)
-	e := DetermineEncoding(bodyReader)
-	utf8Reader := transform.NewReader(bodyReader, e.NewDecoder())
-	return ioutil.ReadAll(utf8Reader)
-}
-func DetermineEncoding(r *bufio.Reader) encoding.Encoding {
-
-	bytes, err := r.Peek(1024)
-
-	if err != nil {
-		fmt.Println("fetch error:%v", err)
-		return unicode.UTF8
-	}
-
-	e, _, _ := charset.DetermineEncoding(bytes, "")
-	return e
-}
-
 func main() {
-	url := "https://www.thepaper.cn/"
-	body, err := Fetch(url)
+	proxyURLs := []string{"http://127.0.0.1:8888", "http://127.0.0.1:8888"}
+	p, _ := proxy.RoundRobinProxySwitcher(proxyURLs...)
+	cookie := "bid=-UXUw--yL5g; dbcl2=\"214281202:q0BBm9YC2Yg\"; __yadk_uid=jigAbrEOKiwgbAaLUt0G3yPsvehXcvrs; push_noty_num=0; push_doumail_num=0; __utmz=30149280.1665849857.1.1.utmcsr=accounts.douban.com|utmccn=(referral)|utmcmd=referral|utmcct=/; __utmv=30149280.21428; ck=SAvm; _pk_ref.100001.8cb4=%5B%22%22%2C%22%22%2C1665925405%2C%22https%3A%2F%2Faccounts.douban.com%2F%22%5D; _pk_ses.100001.8cb4=*; __utma=30149280.2072705865.1665849857.1665849857.1665925407.2; __utmc=30149280; __utmt=1; __utmb=30149280.23.5.1665925419338; _pk_id.100001.8cb4=fc1581490bf2b70c.1665849856.2.1665925421.1665849856."
 
-	if err != nil {
-		fmt.Println("read content failed:%v", err)
-		return
+	var worklist []*collect.Request
+	for i := 0; i <= 100; i += 25 {
+		str := fmt.Sprintf("https://www.douban.com/group/szsh/discussion?start=%d", i)
+		fmt.Printf("str:%v\n", str)
+		worklist = append(worklist, &collect.Request{
+			Url:       str,
+			Cookie:    cookie,
+			ParseFunc: parse.ParseURL,
+		})
 	}
-	matches := headerRe.FindAllSubmatch(body, -1)
-	for _, m := range matches {
-		fmt.Println("fetch card news:", string(m[1]))
+
+	var f collect.Fetcher = &collect.BrowserFetch{
+		Timeout: 3000 * time.Millisecond,
+		Proxy:   p,
 	}
+
+	for len(worklist) > 0 {
+		items := worklist
+		worklist = nil
+		for _, item := range items {
+			body, err := f.Get(item)
+			time.Sleep(1 * time.Second)
+			if err != nil {
+				fmt.Printf("err:%v\n", err)
+				// logger.Error("read content failed",
+				// 	zap.Error(err),
+				// )
+				continue
+			}
+			res := item.ParseFunc(body, item)
+			for _, item := range res.Items {
+				fmt.Printf("result:%v\n", item)
+				// logger.Info("result",
+				// 	zap.String("get url:", item.(string)))
+			}
+			worklist = append(worklist, res.Requests...)
+		}
+	}
+
 }
